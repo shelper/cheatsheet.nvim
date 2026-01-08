@@ -5,7 +5,6 @@ M.defaults = {
 	layout = { preset = "default", preview = true },
 }
 
--- Pre-populate options with defaults so it's never nil
 M.options = vim.deepcopy(M.defaults)
 
 function M.setup(opts)

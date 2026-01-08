@@ -2,11 +2,18 @@ local config = require("cheatsheet.config")
 local M = {}
 local cache = nil
 
+-- AGGRESSIVE CLEANING: Only allow printable characters and slashes
 local function clean_text(str)
 	if not str then
 		return ""
 	end
-	return str:gsub("\27%[[0-9;]*[mK]", ""):gsub("[%c]", ""):gsub("%s+$", "")
+	-- Remove ANSI escape sequences
+	str = str:gsub("\27%[[0-9;]*[mK]", "")
+	-- Remove all control characters (0-31 and 127, includes \r, \t, etc.)
+	str = str:gsub("[%c]", "")
+	-- Trim whitespace
+	str = vim.trim(str)
+	return str
 end
 
 function M.open_cheat(topic)
@@ -19,7 +26,6 @@ function M.open_cheat(topic)
 	vim.cmd("vsplit")
 	vim.api.nvim_set_current_buf(buf)
 
-	-- Use config.options.url (guaranteed non-nil now)
 	vim.system({ "curl", "-s", config.options.url .. topic .. "?T" }, { text = true }, function(obj)
 		vim.schedule(function()
 			if obj.stdout then
@@ -43,6 +49,11 @@ function M.pick()
 			title = " Cheat.sh ",
 			items = items,
 			layout = config.options.layout,
+			-- Force snacks to render the text column specifically
+			format = "text",
+			columns = {
+				{ member = "text", hl = "SnacksPickerLabel" },
+			},
 			preview = function(ctx)
 				local item = ctx.item
 				if not item then
@@ -83,20 +94,39 @@ function M.pick()
 	end
 
 	snacks.notify.info("Fetching Cheat.sh index...")
+
+	-- Using vim.system for cleaner data capture
 	vim.system({ "curl", "-s", config.options.url .. ":list" }, { text = true }, function(obj)
 		if obj.code ~= 0 or not obj.stdout then
+			vim.schedule(function()
+				snacks.notify.error("Failed to fetch Cheat.sh list")
+			end)
 			return
 		end
+
 		local items = {}
-		for line in obj.stdout:gmatch("[^\r\n]+") do
+		-- Split by newline to avoid gmatch issues with \r
+		local raw_lines = vim.split(obj.stdout, "\n")
+
+		for _, line in ipairs(raw_lines) do
 			local clean = clean_text(line)
+			-- Ignore comments and empty lines
 			if clean ~= "" and not clean:match("^#") then
-				table.insert(items, { text = clean })
+				table.insert(items, {
+					text = clean,
+					-- Adding this helps Snacks internal indexing
+					label = clean,
+				})
 			end
 		end
+
 		vim.schedule(function()
-			cache = items
-			launch(items)
+			if #items > 0 then
+				cache = items
+				launch(items)
+			else
+				snacks.notify.error("Parsed list is empty")
+			end
 		end)
 	end)
 end
