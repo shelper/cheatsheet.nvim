@@ -1,13 +1,12 @@
 local M = {}
 
----@class CheatOptions
 M.defaults = {
 	url = "https://cheat.sh/",
-	-- Snacks picker layout
 	layout = { preset = "default", preview = true },
 }
 
-M.options = {}
+-- Pre-populate options with defaults so it's never nil
+M.options = vim.deepcopy(M.defaults)
 
 function M.setup(opts)
 	M.options = vim.tbl_deep_extend("force", M.defaults, opts or {})

@@ -2,7 +2,6 @@ local config = require("cheatsheet.config")
 local M = {}
 local cache = nil
 
--- Private: Clean ANSI codes and control characters
 local function clean_text(str)
 	if not str then
 		return ""
@@ -10,7 +9,6 @@ local function clean_text(str)
 	return str:gsub("\27%[[0-9;]*[mK]", ""):gsub("[%c]", ""):gsub("%s+$", "")
 end
 
--- Private: Open final result in a new split
 function M.open_cheat(topic)
 	local buf = vim.api.nvim_create_buf(false, true)
 	local ft = topic:match("([^/]+)")
@@ -21,6 +19,7 @@ function M.open_cheat(topic)
 	vim.cmd("vsplit")
 	vim.api.nvim_set_current_buf(buf)
 
+	-- Use config.options.url (guaranteed non-nil now)
 	vim.system({ "curl", "-s", config.options.url .. topic .. "?T" }, { text = true }, function(obj)
 		vim.schedule(function()
 			if obj.stdout then
@@ -31,12 +30,10 @@ function M.open_cheat(topic)
 	end)
 end
 
--- Main Setup
 function M.setup(opts)
 	config.setup(opts)
 end
 
--- The Picker
 function M.pick()
 	local snacks = require("snacks")
 
@@ -54,7 +51,6 @@ function M.pick()
 
 				vim.system({ "curl", "-s", config.options.url .. item.text .. "?T" }, { text = true }, function(obj)
 					vim.schedule(function()
-						-- Check if picker is still open and buffer is valid
 						if obj.stdout and vim.api.nvim_buf_is_valid(ctx.buf) then
 							local lines = vim.split(obj.stdout:gsub("\r", ""), "\n")
 							ctx.preview:set_lines(lines)
