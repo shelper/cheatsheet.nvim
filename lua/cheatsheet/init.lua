@@ -2,16 +2,6 @@ local config = require("cheatsheet.config")
 local M = {}
 local cache = nil
 
--- Aggressive cleaning for the picker list
-local function clean_text(str)
-	if not str then
-		return ""
-	end
-	str = str:gsub("\27%[[0-9;]*[mK]", "") -- Strip ANSI
-	str = str:gsub("[%c]", "") -- Strip Control Chars
-	return vim.trim(str)
-end
-
 function M.open_cheat(topic)
 	local buf = vim.api.nvim_create_buf(false, true)
 	local ft = topic:match("([^/]+)")
@@ -119,10 +109,11 @@ function M.pick()
 		local raw_lines = vim.split(obj.stdout, "\n")
 
 		for _, line in ipairs(raw_lines) do
-			local clean = clean_text(line)
-			if clean ~= "" and not clean:match("^#") then
+			-- local clean = clean_text(line)
+			line = line:gsub("[%c]", "") -- Strip Control Chars
+			if line ~= "" and not line:match("^#") then
 				table.insert(items, {
-					text = clean,
+					text = line,
 				})
 			end
 		end
