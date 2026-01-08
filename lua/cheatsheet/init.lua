@@ -6,16 +6,12 @@ local cache = nil
 
 -- --- Helpers ---
 
----Removes control characters and specific icons
----@param str string
----@return string
 local function sanitize(str)
-	return (str:gsub("[%c]", ""):gsub("  ", ""):gsub("󰉋  ", ""))
+	local clean = str:gsub("[%c]", "")
+	clean = clean:gsub("  ", ""):gsub("󰉋  ", ""):gsub("󱓞  ", "")
+	return vim.trim(clean)
 end
 
----Reads a local file into a list of lines
----@param path string
----@return string[]?
 local function read_file(path)
 	local f = io.open(path, "r")
 	if not f then
@@ -28,12 +24,15 @@ end
 
 -- --- Core Logic ---
 
----Logic to display the cheat sheet in a split window
----@param item table {text: string, is_local: boolean, path?: string}
+---Logic to display the cheat sheet and optionally add it to cache
+---@param item table {text: string, is_local: boolean, path?: string, is_new?: boolean}
 function M.display(item)
 	local topic = sanitize(item.text)
-	local buf = vim.api.nvim_create_buf(false, true)
+	if topic == "Manual Query..." or topic == "" then
+		return
+	end
 
+	local buf = vim.api.nvim_create_buf(false, true)
 	vim.api.nvim_buf_set_name(buf, "cheat://" .. topic)
 	vim.bo[buf].buftype = "nofile"
 	vim.bo[buf].bufhidden = "wipe"
@@ -56,7 +55,25 @@ function M.display(item)
 			vim.schedule(function()
 				if obj.stdout and vim.api.nvim_buf_is_valid(buf) then
 					local lines = vim.split(obj.stdout:gsub("\r", ""), "\n")
+
+					-- Check if the response is a 404 or empty (cheat.sh returns specific text for not found)
+					if #lines < 3 and lines[1]:match("Unknown topic") then
+						vim.api.nvim_buf_set_lines(
+							buf,
+							0,
+							-1,
+							false,
+							{ "# Topic not found on cheat.sh", "", "Query: " .. topic }
+						)
+						return
+					end
+
 					vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+
+					-- SUCCESS: Add to cache if it was a manual search so it shows in the list next time
+					if item.is_new and cache then
+						table.insert(cache, 2, { text = "󱓞  " .. topic, is_local = false })
+					end
 				end
 			end)
 		end)
@@ -67,7 +84,6 @@ function M.setup(opts)
 	config.setup(opts)
 end
 
----The Snacks.picker implementation
 function M.pick()
 	local snacks = require("snacks")
 
@@ -86,7 +102,7 @@ function M.pick()
 							local search = picker:filter().search
 							if search ~= "" then
 								picker:close()
-								M.display({ text = search, is_local = false })
+								M.display({ text = search, is_local = false, is_new = true })
 							end
 						end,
 					},
@@ -125,18 +141,28 @@ function M.pick()
 				end
 			end,
 			confirm = function(picker, item)
+				local filter = picker:filter().search
 				picker:close()
+
 				vim.schedule(function()
+					-- AUTO MANUAL QUERY: If no item matches your typed text, search the typed text
+					if not item then
+						if filter ~= "" then
+							M.display({ text = filter, is_local = false, is_new = true })
+						end
+						return
+					end
+
 					if item.is_manual then
 						vim.ui.input({ prompt = "Manual Query: " }, function(input)
 							if input and input ~= "" then
-								M.display({ text = input, is_local = false })
+								M.display({ text = input, is_local = false, is_new = true })
 							end
 						end)
 					elseif not item.is_local and item.text:sub(-1) == "/" then
 						vim.ui.input({ prompt = "Query " .. item.text }, function(input)
 							if input and input ~= "" then
-								M.display({ text = item.text .. input, is_local = false })
+								M.display({ text = item.text .. input, is_local = false, is_new = true })
 							end
 						end)
 					else
@@ -151,11 +177,10 @@ function M.pick()
 		return launch(cache)
 	end
 
-	require("snacks").notify.info("Indexing Cheatsheets...")
+	snacks.notify.info("Indexing Cheatsheets...")
 
 	local final_items = { { text = "  Manual Query...", is_manual = true } }
 
-	-- Add Local Files
 	if config.options.local_path and vim.fn.isdirectory(config.options.local_path) == 1 then
 		for _, path in ipairs(vim.fn.globpath(config.options.local_path, "*", false, true)) do
 			table.insert(final_items, {
@@ -166,7 +191,6 @@ function M.pick()
 		end
 	end
 
-	-- Fetch Remote List
 	vim.system({ "curl", "-s", config.options.url .. ":list" }, { text = true }, function(obj)
 		if obj.code == 0 and obj.stdout then
 			local remote_items = vim.iter(vim.split(obj.stdout, "\n"))
