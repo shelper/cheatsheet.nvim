@@ -1,93 +1,146 @@
 local config = require("cheatsheet.config")
 local M = {}
+
+---@type table[]?
 local cache = nil
 
-function M.open_cheat(topic)
+-- --- Helpers ---
+
+---Removes control characters and specific icons
+---@param str string
+---@return string
+local function sanitize(str)
+	return (str:gsub("[%c]", ""):gsub("  ", ""):gsub("󰉋  ", ""))
+end
+
+---Reads a local file into a list of lines
+---@param path string
+---@return string[]?
+local function read_file(path)
+	local f = io.open(path, "r")
+	if not f then
+		return nil
+	end
+	local content = f:read("*all")
+	f:close()
+	return vim.split(content:gsub("\r", ""), "\n")
+end
+
+-- --- Core Logic ---
+
+---Logic to display the cheat sheet in a split window
+---@param item table {text: string, is_local: boolean, path?: string}
+function M.display(item)
+	local topic = sanitize(item.text)
 	local buf = vim.api.nvim_create_buf(false, true)
-	local ft = topic:match("([^/]+)")
 
-	-- Set buffer options safely
-	vim.api.nvim_set_option_value("buftype", "nofile", { buf = buf })
 	vim.api.nvim_buf_set_name(buf, "cheat://" .. topic)
+	vim.bo[buf].buftype = "nofile"
+	vim.bo[buf].bufhidden = "wipe"
 
-	-- Try to set filetype, fallback to markdown
+	local ft = topic:match("([^/]+)")
 	pcall(function()
-		vim.api.nvim_set_option_value("filetype", ft or "markdown", { buf = buf })
+		vim.bo[buf].filetype = ft or "markdown"
 	end)
 
 	vim.cmd("vsplit")
 	vim.api.nvim_set_current_buf(buf)
 
-	vim.system({ "curl", "-s", config.options.url .. topic .. "?T" }, { text = true }, function(obj)
-		vim.schedule(function()
-			if obj.stdout and vim.api.nvim_buf_is_valid(buf) then
-				local lines = vim.split(obj.stdout:gsub("\r", ""), "\n")
-				vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
-			end
+	if item.is_local and item.path then
+		local lines = read_file(item.path)
+		if lines then
+			vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+		end
+	else
+		vim.system({ "curl", "-s", config.options.url .. topic .. "?T" }, { text = true }, function(obj)
+			vim.schedule(function()
+				if obj.stdout and vim.api.nvim_buf_is_valid(buf) then
+					local lines = vim.split(obj.stdout:gsub("\r", ""), "\n")
+					vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+				end
+			end)
 		end)
-	end)
+	end
 end
 
 function M.setup(opts)
 	config.setup(opts)
 end
 
+---The Snacks.picker implementation
 function M.pick()
 	local snacks = require("snacks")
 
 	local function launch(items)
 		snacks.picker.pick({
-			source = "cheat_sh",
+			source = "cheatsheet",
 			title = " Cheat.sh ",
 			items = items,
 			layout = config.options.layout,
 			format = "text",
-			columns = {
-				{ member = "text", hl = "SnacksPickerLabel" },
+			columns = { { member = "text", hl = "SnacksPickerLabel" } },
+			win = {
+				input = {
+					keys = {
+						["<c-s>"] = function(picker)
+							local search = picker:filter().search
+							if search ~= "" then
+								picker:close()
+								M.display({ text = search, is_local = false })
+							end
+						end,
+					},
+				},
 			},
 			preview = function(ctx)
 				local item = ctx.item
-				if not item then
+				if not item or item.is_manual then
 					return
 				end
 
-				-- Store the current text to verify after async call
-				local current_text = item.text
-
-				vim.system({ "curl", "-s", config.options.url .. current_text .. "?T" }, { text = true }, function(obj)
-					vim.schedule(function()
-						-- 1. Check if buffer is still valid
-						-- 2. Check if the user is still hovering over the same item
-						if
-							obj.stdout
-							and vim.api.nvim_buf_is_valid(ctx.buf)
-							and ctx.item
-							and ctx.item.text == current_text
-						then
-							local lines = vim.split(obj.stdout:gsub("\r", ""), "\n")
-							ctx.preview:set_lines(lines)
-
-							-- Use pcall to ignore "Invalid Argument" for non-existent filetypes
-							local ft = current_text:match("([^/]+)")
-							pcall(function()
-								ctx.preview:highlight({ ft = ft or "markdown" })
-							end)
-						end
+				if item.is_local then
+					local lines = read_file(item.path)
+					if lines then
+						ctx.preview:set_lines(lines)
+						ctx.preview:highlight({ ft = "markdown" })
+					end
+				else
+					local topic = sanitize(item.text)
+					vim.system({ "curl", "-s", config.options.url .. topic .. "?T" }, { text = true }, function(obj)
+						vim.schedule(function()
+							if
+								obj.stdout
+								and vim.api.nvim_buf_is_valid(ctx.buf)
+								and ctx.item
+								and ctx.item.text == item.text
+							then
+								local lines = vim.split(obj.stdout:gsub("\r", ""), "\n")
+								ctx.preview:set_lines(lines)
+								pcall(function()
+									ctx.preview:highlight({ ft = topic:match("([^/]+)") or "markdown" })
+								end)
+							end
+						end)
 					end)
-				end)
+				end
 			end,
 			confirm = function(picker, item)
 				picker:close()
-				local val = item.text
 				vim.schedule(function()
-					if val:sub(-1) == "/" then
-						vim.ui.input({ prompt = "Query " .. val }, function(input)
+					if item.is_manual then
+						vim.ui.input({ prompt = "Manual Query: " }, function(input)
 							if input and input ~= "" then
-								M.open_cheat(val .. input)
+								M.display({ text = input, is_local = false })
+							end
+						end)
+					elseif not item.is_local and item.text:sub(-1) == "/" then
+						vim.ui.input({ prompt = "Query " .. item.text }, function(input)
+							if input and input ~= "" then
+								M.display({ text = item.text .. input, is_local = false })
 							end
 						end)
 					else
-						M.open_cheat(val)
+						M.display(item)
 					end
 				end)
 			end,
@@ -98,33 +151,42 @@ function M.pick()
 		return launch(cache)
 	end
 
-	snacks.notify.info("Fetching Cheat.sh index...")
+	require("snacks").notify.info("Indexing Cheatsheets...")
 
-	vim.system({ "curl", "-s", config.options.url .. ":list" }, { text = true }, function(obj)
-		if obj.code ~= 0 or not obj.stdout then
-			return
+	local final_items = { { text = "  Manual Query...", is_manual = true } }
+
+	-- Add Local Files
+	if config.options.local_path and vim.fn.isdirectory(config.options.local_path) == 1 then
+		for _, path in ipairs(vim.fn.globpath(config.options.local_path, "*", false, true)) do
+			table.insert(final_items, {
+				text = "󰉋  " .. vim.fn.fnamemodify(path, ":t"),
+				path = path,
+				is_local = true,
+			})
 		end
+	end
 
-		local items = {}
-		local raw_lines = vim.split(obj.stdout, "\n")
+	-- Fetch Remote List
+	vim.system({ "curl", "-s", config.options.url .. ":list" }, { text = true }, function(obj)
+		if obj.code == 0 and obj.stdout then
+			local remote_items = vim.iter(vim.split(obj.stdout, "\n"))
+				:map(function(line)
+					return line:gsub("[%c]", "")
+				end)
+				:filter(function(line)
+					return line ~= "" and not line:match("^#")
+				end)
+				:map(function(line)
+					return { text = line, is_local = false }
+				end)
+				:totable()
 
-		for _, line in ipairs(raw_lines) do
-			-- local clean = clean_text(line)
-			line = line:gsub("[%c]", "") -- Strip Control Chars
-			if line ~= "" and not line:match("^#") then
-				table.insert(items, {
-					text = line,
-				})
-			end
+			vim.list_extend(final_items, remote_items)
 		end
 
 		vim.schedule(function()
-			if #items > 0 then
-				cache = items
-				launch(items)
-			else
-				snacks.notify.error("Cheat.sh list is empty")
-			end
+			cache = final_items
+			launch(final_items)
 		end)
 	end)
 end
